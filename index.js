@@ -6,7 +6,7 @@ const multer = require('multer');
 const dotenv = require('dotenv');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const pdf = require('pdf-parse');
-const mammoth = require('mammoth'); // <-- NEW: Add mammoth for DOCX
+const mammoth = require('mammoth');
 const { v4: uuidv4 } = require('uuid');
 
 dotenv.config();
@@ -32,7 +32,6 @@ app.post('/api/analyze', upload.single('document'), async (req, res) => {
   try {
     let documentText = '';
 
-    // --- NEW: Check the file type and process accordingly ---
     if (req.file.mimetype === 'application/pdf') {
       const data = await pdf(req.file.buffer);
       documentText = data.text;
@@ -56,29 +55,45 @@ app.post('/api/analyze', upload.single('document'), async (req, res) => {
 
       Document Text:
       ---
-      ${documentText}
+      ${documentText.substring(0, 30000)} 
       ---
 
-      Please provide the analysis in a structured JSON format with three keys: 
-      "summary", "risky_clauses", and "explanations". The "risky_clauses" should be an array of objects, where each object has "title", "source_excerpt", "explanation_en", and "risk_level" (LOW, MEDIUM, or HIGH).
+      IMPORTANT: You must provide the analysis in a single, valid JSON object format with three keys: 
+      "summary", "risky_clauses", and "explanations". The "risky_clauses" must be an array of objects, where each object has "title", "source_excerpt", "explanation_en", and "risk_level" (LOW, MEDIUM, or HIGH). Do not wrap the JSON in markdown backticks.
     `;
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
     let analysisText = response.text();
     
-    // Clean the response to ensure it's valid JSON
-    analysisText = analysisText.replace(/```json/g, '').replace(/```/g, '').trim();
+    // --- NEW: More robust JSON cleaning and parsing ---
+    let analysisJSON;
+    try {
+      // First, try to find the JSON block in case the AI adds extra text
+      const jsonMatch = analysisText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        analysisJSON = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error("No valid JSON object found in the AI response.");
+      }
+    } catch (parseError) {
+      // If parsing fails, log the problematic text and send an error
+      console.error("--- FAILED TO PARSE GEMINI RESPONSE ---");
+      console.error("Problematic text received:", analysisText);
+      // This specific error helps with debugging
+      throw new Error("The AI model returned an invalid or unexpected format."); 
+    }
 
     const doc_id = uuidv4();
-    analysisResults[doc_id] = JSON.parse(analysisText);
+    analysisResults[doc_id] = analysisJSON; // Store the valid JSON
 
     console.log(`Analysis complete for doc_id: ${doc_id}`);
     res.status(200).json({ doc_id: doc_id });
 
   } catch (error) {
     console.error('Error during analysis:', error);
-    res.status(500).json({ error: 'Failed to analyze document.' });
+    // Send a more specific error message back to the frontend
+    res.status(500).json({ error: error.message || 'Failed to analyze document.' });
   }
 });
 
