@@ -1,5 +1,3 @@
-// index.js
-
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -8,13 +6,26 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 const { v4: uuidv4 } = require('uuid');
+const fs = require('fs-extra');
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3001;
 
-const analysisResults = {};
+const RESULTS_FILE = './results.json';
+
+// Load existing results on startup
+let analysisResults = {};
+if (fs.existsSync(RESULTS_FILE)) {
+  try {
+    analysisResults = fs.readJsonSync(RESULTS_FILE);
+    console.log('Loaded previous results from file.');
+  } catch (err) {
+    console.error('Failed to load previous results:', err);
+    analysisResults = {};
+  }
+}
 
 app.use(cors());
 app.use(express.json());
@@ -93,7 +104,15 @@ app.post('/api/analyze', upload.single('document'), async (req, res) => {
     console.log("Parsed analysis JSON:", analysisJSON);
 
     const doc_id = uuidv4();
-    analysisResults[doc_id] = analysisJSON; // Store the valid JSON
+    analysisResults[doc_id] = analysisJSON;
+
+    // --- Save to file ---
+    try {
+      await fs.writeJson(RESULTS_FILE, analysisResults, { spaces: 2 });
+      console.log('Saved analysis result to file.');
+    } catch (err) {
+      console.error('Failed to save result to file:', err);
+    }
 
     console.log(`Analysis complete for doc_id: ${doc_id}`);
     res.status(200).json({ doc_id: doc_id });
@@ -106,6 +125,14 @@ app.post('/api/analyze', upload.single('document'), async (req, res) => {
 
 app.get('/api/results/:doc_id', (req, res) => {
     const { doc_id } = req.params;
+    if (fs.existsSync(RESULTS_FILE)) {
+      try {
+        analysisResults = fs.readJsonSync(RESULTS_FILE);
+      } catch (err) {
+        console.error('Failed to reload results file:', err);
+        return res.status(500).json({ error: 'Failed to load results.' });
+      }
+    }
     const result = analysisResults[doc_id];
     if (result) {
         res.status(200).json(result);
