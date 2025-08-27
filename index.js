@@ -6,43 +6,47 @@ const multer = require('multer');
 const dotenv = require('dotenv');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const pdf = require('pdf-parse');
-const { v4: uuidv4 } = require('uuid'); // To generate unique IDs
+const mammoth = require('mammoth'); // <-- NEW: Add mammoth for DOCX
+const { v4: uuidv4 } = require('uuid');
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3001;
 
-// --- In-memory storage for the hackathon ---
-// In a real app, you'd use a database like Supabase or Firebase.
-// This object will store the analysis results temporarily.
 const analysisResults = {};
 
-// --- Middleware ---
-app.use(cors()); // Allow requests from your frontend
+app.use(cors());
 app.use(express.json());
 
-// Set up multer for file uploads in memory
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// --- Initialize Gemini AI ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// --- API Endpoints ---
-
-// This is the main endpoint your frontend will call
 app.post('/api/analyze', upload.single('document'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded.' });
   }
 
   try {
-    // 1. Extract text from the uploaded PDF
-    const data = await pdf(req.file.buffer);
-    const documentText = data.text;
+    let documentText = '';
 
-    // 2. Prepare the prompt for Gemini
+    // --- NEW: Check the file type and process accordingly ---
+    if (req.file.mimetype === 'application/pdf') {
+      const data = await pdf(req.file.buffer);
+      documentText = data.text;
+    } else if (req.file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      const { value } = await mammoth.extractRawText({ buffer: req.file.buffer });
+      documentText = value;
+    } else {
+      return res.status(400).json({ error: 'Unsupported file type. Please upload a PDF or DOCX.' });
+    }
+    
+    if (!documentText) {
+        return res.status(400).json({ error: 'Could not extract text from the document.' });
+    }
+
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-preview-05-20' });
     const prompt = `
       You are an expert legal assistant specialized in Indian law. 
@@ -56,21 +60,20 @@ app.post('/api/analyze', upload.single('document'), async (req, res) => {
       ---
 
       Please provide the analysis in a structured JSON format with three keys: 
-      "summary", "risky_clauses", and "explanations".
+      "summary", "risky_clauses", and "explanations". The "risky_clauses" should be an array of objects, where each object has "title", "source_excerpt", "explanation_en", and "risk_level" (LOW, MEDIUM, or HIGH).
     `;
 
-    // 3. Call the Gemini API
     const result = await model.generateContent(prompt);
     const response = await result.response;
-    const analysisText = response.text();
+    let analysisText = response.text();
+    
+    // Clean the response to ensure it's valid JSON
+    analysisText = analysisText.replace(/```json/g, '').replace(/```/g, '').trim();
 
-    // 4. Store the result and generate a unique ID
     const doc_id = uuidv4();
-    analysisResults[doc_id] = JSON.parse(analysisText); // Store the parsed JSON
+    analysisResults[doc_id] = JSON.parse(analysisText);
 
     console.log(`Analysis complete for doc_id: ${doc_id}`);
-
-    // 5. Send the unique ID back to the frontend
     res.status(200).json({ doc_id: doc_id });
 
   } catch (error) {
@@ -79,18 +82,15 @@ app.post('/api/analyze', upload.single('document'), async (req, res) => {
   }
 });
 
-// This endpoint lets the frontend fetch the results using the ID
 app.get('/api/results/:doc_id', (req, res) => {
     const { doc_id } = req.params;
     const result = analysisResults[doc_id];
-
     if (result) {
         res.status(200).json(result);
     } else {
         res.status(404).json({ error: 'Analysis not found.' });
     }
 });
-
 
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
