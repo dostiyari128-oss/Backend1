@@ -42,6 +42,9 @@ app.post('/api/analyze', upload.single('document'), async (req, res) => {
       return res.status(400).json({ error: 'Unsupported file type. Please upload a PDF or DOCX.' });
     }
     
+    // --- DEBUG: Log extracted text ---
+    console.log("Extracted text (first 500 chars):", documentText.substring(0, 500));
+
     if (!documentText) {
         return res.status(400).json({ error: 'Could not extract text from the document.' });
     }
@@ -65,8 +68,11 @@ app.post('/api/analyze', upload.single('document'), async (req, res) => {
     const result = await model.generateContent(prompt);
     const response = await result.response;
     let analysisText = response.text();
-    
-    // --- NEW: More robust JSON cleaning and parsing ---
+
+    // --- DEBUG: Log Gemini response ---
+    console.log("Gemini response:", analysisText);
+
+    // --- More robust JSON cleaning and parsing ---
     let analysisJSON;
     try {
       // First, try to find the JSON block in case the AI adds extra text
@@ -80,9 +86,11 @@ app.post('/api/analyze', upload.single('document'), async (req, res) => {
       // If parsing fails, log the problematic text and send an error
       console.error("--- FAILED TO PARSE GEMINI RESPONSE ---");
       console.error("Problematic text received:", analysisText);
-      // This specific error helps with debugging
       throw new Error("The AI model returned an invalid or unexpected format."); 
     }
+
+    // --- DEBUG: Log parsed JSON ---
+    console.log("Parsed analysis JSON:", analysisJSON);
 
     const doc_id = uuidv4();
     analysisResults[doc_id] = analysisJSON; // Store the valid JSON
@@ -92,7 +100,6 @@ app.post('/api/analyze', upload.single('document'), async (req, res) => {
 
   } catch (error) {
     console.error('Error during analysis:', error);
-    // Send a more specific error message back to the frontend
     res.status(500).json({ error: error.message || 'Failed to analyze document.' });
   }
 });
